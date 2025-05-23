@@ -12,6 +12,183 @@ type ExportModalProps = {
   xKey: string;
 };
 
+type DatePickerProps = {
+  selectedDate: string;
+  onDateSelect: (date: string) => void;
+  isVisible: boolean;
+  setIsVisible: (visible: boolean) => void;
+};
+
+// Sample data
+const dataDay: DataItem[] = [
+  { day: "Monday", value: 75 },
+  { day: "Tuesday", value: 60 },
+  { day: "Wednesday", value: 90 },
+  { day: "Thursday", value: 50 },
+  { day: "Friday", value: 100 },
+  { day: "Saturday", value: 70 },
+  { day: "Sunday", value: 85 },
+];
+
+const dataWeek: DataItem[] = [
+  { week: "Week 1", value: 200 },
+  { week: "Week 2", value: 300 },
+  { week: "Week 3", value: 250 },
+  { week: "Week 4", value: 280 },
+];
+
+const dataMonth: DataItem[] = [
+  { month: "Jan", value: 75 },
+  { month: "Feb", value: 50 },
+  { month: "Mar", value: 65 },
+  { month: "Apr", value: 90 },
+  { month: "May", value: 70 },
+  { month: "Jun", value: 80 },
+  { month: "Jul", value: 85 },
+  { month: "Aug", value: 100 },
+  { month: "Sep", value: 70 },
+  { month: "Oct", value: 75 },
+  { month: "Nov", value: 70 },
+  { month: "Dec", value: 85 },
+];
+
+const dataYear: DataItem[] = [
+  { year: "2021", value: 850 },
+  { year: "2022", value: 920 },
+  { year: "2023", value: 880 },
+  { year: "2024", value: 950 },
+  { year: "2025", value: 1050 },
+];
+
+// Date Picker
+const DatePicker: React.FC<DatePickerProps> = ({
+  selectedDate,
+  onDateSelect,
+  isVisible,
+  setIsVisible,
+}) => {
+  if (!isVisible) return null;
+
+  const currentDate = new Date();
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDay = new Date(year, month, 1).getDay();
+
+  const days: JSX.Element[] = [];
+
+  for (let i = 0; i < firstDay; i++) {
+    days.push(<div key={`empty-${i}`} className="h-8 w-8"></div>);
+  }
+
+  for (let i = 1; i <= daysInMonth; i++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(i).padStart(2, "0")}`;
+    days.push(
+      <button
+        key={i}
+        onClick={() => {
+          onDateSelect(dateStr);
+          setIsVisible(false);
+        }}
+        className={`h-8 w-8 rounded-full hover:bg-[#79A842] hover:text-white ${dateStr === selectedDate ? "bg-[#356B2C] text-white" : ""
+          }`}
+      >
+        {i}
+      </button>
+    );
+  }
+
+  return (
+    <div className="absolute z-10 mt-1 p-2 bg-white border border-[#356B2C] rounded-md shadow-lg">
+      <div className="text-center font-bold mb-2 text-[#356B2C]">
+        {new Date(year, month).toLocaleString("default", { month: "long" })} {year}
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center">
+        {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((day) => (
+          <div key={day} className="font-semibold text-[#356B2C]">
+            {day}
+          </div>
+        ))}
+        {days}
+      </div>
+    </div>
+  );
+};
+
+// Modal
+const ExportModal: React.FC<ExportModalProps> = ({
+  isOpen,
+  onClose,
+  chartRef,
+  chartData,
+  xKey,
+}) => {
+  const [exportFormat, setExportFormat] = useState<string>("PDF");
+  const [timeFrame, setTimeFrame] = useState<string>("days");
+  const [exportType, setExportType] = useState<string>("predefined");
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
+  const [showStartCalendar, setShowStartCalendar] = useState<boolean>(false);
+  const [showEndCalendar, setShowEndCalendar] = useState<boolean>(false);
+
+  const getDataForTimeFrame = (): DataItem[] => {
+    switch (timeFrame) {
+      case "days":
+        return dataDay;
+      case "weeks":
+        return dataWeek;
+      case "months":
+        return dataMonth;
+      case "years":
+        return dataYear;
+      default:
+        return chartData;
+    }
+  };
+
+  const getXKeyForTimeFrame = (): string => {
+    switch (timeFrame) {
+      case "days":
+        return "day";
+      case "weeks":
+        return "week";
+      case "months":
+        return "month";
+      case "years":
+        return "year";
+      default:
+        return xKey;
+    }
+  };
+
+  const handleExportClick = () => {
+  const dataToExport = getDataForTimeFrame();
+  const keyToUse = getXKeyForTimeFrame();
+
+  const exportConfig = {
+    format: exportFormat.toLowerCase(),
+    data: dataToExport,
+    key: keyToUse,
+    title: "Humidity",
+    dateRange: exportType === "custom" ? { from: startDate, to: endDate } : null,
+  };
+
+  console.log("Exporting:", exportConfig);
+
+  // Pass the timeFrame parameter to correctly filter date-specific data
+  handleExport(
+    exportFormat.toLowerCase(), 
+    chartRef.current, 
+    dataToExport, 
+    keyToUse, 
+    "Humidity", 
+    exportType === "custom" ? { from: startDate, to: endDate } : null,
+    timeFrame // Add this parameter
+  );
+  
+  onClose();
+};
+
 const ExportModal = ({ isOpen, onClose, chartRef, chartData, xKey }: ExportModalProps) => {
   if (!isOpen) return null;
 
@@ -88,7 +265,7 @@ const HumidityChart = () => {
           </label>
           <select
             id="overview"
-            className="text-xs border px-3 py-2 rounded shadow bg-white text-[#356B2C]"
+            className="text-xs border pl-1 py-2 rounded shadow bg-white text-[#356B2C] "
             value={overview}
             onChange={(e) => setOverview(e.target.value)}
           >

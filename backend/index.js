@@ -1,3 +1,4 @@
+// index.js
 import { MongoClient, ObjectId } from 'mongodb';
 import express from 'express';
 import cors from 'cors';
@@ -6,7 +7,9 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcrypt';
 import cron from 'node-cron';
+
 
 import userRoutes from './routes/user.route.js';
 import sensorDataRoutes from './routes/sensor_data.route.js';
@@ -43,10 +46,24 @@ const allowedOrigins = [
   'https://maize-watch.onrender.com'
 ];
 
+// Debug middleware - log all requests
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} from origin: ${req.headers.origin || 'no origin'}`);
+  next();
+});
+
+// CORS configuration
+// Development-friendly CORS options (more permissive)
+const corsOptions = {
 // CORS configuration
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
+    // In development, we'll be more permissive with CORS
+    // For production, you should restrict this properly
+    callback(null, true);
+    
+    // Original strict checking - uncomment for production
+    /*
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) === -1) {
@@ -55,11 +72,15 @@ app.use(cors({
       return callback(new Error(msg), false);
     }
     return callback(null, true);
+    */
   },
+  credentials: true, // Allow cookies/authentication
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
 
 // Body parser middleware
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -103,6 +124,34 @@ const connectToMongo = async () => {
   }
 };
 
+
+// Helper function to project fields
+const projectFields = (document, fields) => {
+  if (!fields) return document;
+  
+  const fieldArray = fields.split(',');
+  const projected = {};
+  
+  // Always include _id
+  projected._id = document._id;
+  
+  fieldArray.forEach(field => {
+    if (document[field] !== undefined) {
+      projected[field] = document[field];
+    }
+  });
+  
+  return projected;
+};
+
+// Initialize MQTT service
+let mqttService;
+try {
+  mqttService = new MqttService(process.env.MQTT_BROKER);
+} catch (err) {
+  console.error('MQTT service initialization error:', err);
+}
+
 // Routes
 app.use('/auth', userRoutes);
 app.use('/api/sensors', sensorDataRoutes);
@@ -140,6 +189,15 @@ app.get('/health', async (req, res) => {
 // Get all users - admin only
 app.get('/api/users', isAdmin, async (req, res) => {
   try {
+    const { fields } = req.query;
+    const users = await db.collection('users').find({}).toArray();
+    
+    // Apply field projection if requested
+    if (fields) {
+      const projectedUsers = users.map(user => projectFields(user, fields));
+      return res.json(projectedUsers);
+    }
+    
     if (!mainDb) {
       return res.status(500).json({ error: 'Database connection not established' });
     }
@@ -154,6 +212,24 @@ app.get('/api/users', isAdmin, async (req, res) => {
 // Create user - admin only
 app.post('/api/users', isAdmin, async (req, res) => {
   try {
+    // Clone the request body to avoid modifying the original
+    const userData = {...req.body};
+    
+    // Hash password if provided
+    if (userData.password) {
+      const salt = await bcrypt.genSalt(10);
+      userData.password = await bcrypt.hash(userData.password, salt);
+    }
+
+    const result = await db.collection('users').insertOne(userData);
+    
+    // Don't return the password in the response
+    const { password, ...userWithoutPassword } = userData;
+    
+    res.status(201).json({ 
+      ...userWithoutPassword, 
+      _id: result.insertedId 
+    });
     if (!mainDb) {
       return res.status(500).json({ error: 'Database connection not established' });
     }
@@ -168,11 +244,23 @@ app.post('/api/users', isAdmin, async (req, res) => {
 // Get single user - admin only
 app.get('/api/users/:id', isAdmin, async (req, res) => {
   try {
+
+    const { fields } = req.query;
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
+    
     if (!mainDb) {
       return res.status(500).json({ error: 'Database connection not established' });
     }
     const user = await mainDb.collection('users').findOne({ _id: new ObjectId(req.params.id) });
+
     if (!user) return res.status(404).json({ error: 'User not found' });
+    
+    // Apply field projection if requested
+    if (fields) {
+      const projectedUser = projectFields(user, fields);
+      return res.json(projectedUser);
+    }
+    
     res.json(user);
   } catch (err) {
     console.error('Error getting user:', err);
@@ -183,18 +271,86 @@ app.get('/api/users/:id', isAdmin, async (req, res) => {
 // Update user - admin only
 app.put('/api/users/:id', isAdmin, async (req, res) => {
   try {
+    // Add updatedAt timestamp
+    const updateData = {
+      ...req.body,
+      updatedAt: new Date().toISOString()
+    };
+    
+    const result = await db.collection('users').updateOne(
+
     if (!mainDb) {
       return res.status(500).json({ error: 'Database connection not established' });
     }
     const result = await mainDb.collection('users').updateOne(
+
       { _id: new ObjectId(req.params.id) },
-      { $set: req.body }
+      { $set: updateData }
     );
-    if (result.matchedCount === 0) return res.status(404).json({ error: 'User not found' });
-    res.json({ message: 'User updated successfully' });
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Fetch and return the updated user
+    const updatedUser = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
+    
+    // Remove password from response for security
+    const { password, ...userWithoutPassword } = updatedUser;
+    
+    res.json(userWithoutPassword);
   } catch (err) {
     console.error('Error updating user:', err);
     res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+// Add a route to get current user profile (for authenticated users)
+app.get('/api/profile', isAuthenticated, async (req, res) => {
+  try {
+    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Remove password from response
+    const { password, ...userProfile } = user;
+    res.json(userProfile);
+  } catch (err) {
+    console.error('Error getting user profile:', err);
+    res.status(500).json({ error: 'Failed to fetch user profile' });
+  }
+});
+
+// Update current user profile (for authenticated users)
+app.put('/api/profile', isAuthenticated, async (req, res) => {
+  try {
+    // Prevent users from changing their role
+    const { role, ...allowedUpdates } = req.body;
+    
+    const updateData = {
+      ...allowedUpdates,
+      updatedAt: new Date().toISOString()
+    };
+    
+    const result = await db.collection('users').updateOne(
+      { _id: new ObjectId(req.user.id) },
+      { $set: updateData }
+    );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Fetch and return the updated user profile
+    const updatedUser = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+    const { password, ...userProfile } = updatedUser;
+    
+    res.json(userProfile);
+  } catch (err) {
+    console.error('Error updating user profile:', err);
+    res.status(500).json({ error: 'Failed to update user profile' });
   }
 });
 

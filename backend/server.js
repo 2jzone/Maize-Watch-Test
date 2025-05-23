@@ -1,3 +1,4 @@
+
 import { MongoClient, ObjectId } from 'mongodb';
 import express from 'express';
 import cors from 'cors';
@@ -37,6 +38,7 @@ const port = process.env.PORT || 8080;
 let mainDb; // Native MongoDB driver connection
 let userDbConnection; // For user operations
 
+
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
@@ -67,6 +69,17 @@ app.use(cors({
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
+
+// Apply token blacklist check to all routes
+app.use(checkTokenBlacklist);
+
+// Routes
+app.use('/auth', authRoutes);
+
+// Additional route handling for your existing endpoints
+// ...
+
+// Global error handler
 // Connect to MongoDB
 const connectToMongo = async () => {
   try {
@@ -300,7 +313,7 @@ cron.schedule('59 59 23 * * *', async () => {
 
 // Error handling middleware - should be after all routes
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error('Unhandled error:', err);
   res.status(500).json({
     message: 'Internal Server Error',
     error: process.env.NODE_ENV === 'production' ? null : err.message
