@@ -1,10 +1,43 @@
 import React, { useState, useRef, useEffect } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
-import { Download, X, Calendar } from "lucide-react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  ReferenceLine,
+} from "recharts";
+import {
+  Download,
+  X,
+  Calendar as CalendarIcon,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  RefreshCw,
+  FileText,
+  BarChart3,
+  LineChart as LineChartIcon,
+  Droplet,
+} from "lucide-react";
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
+import { saveAs } from 'file-saver';
+import { Calendar as CalendarPicker } from "../ui/calendar";
 
 // Types
 interface DataItem {
-  [key: string]: string | number;
+  [key: string]: string | number | { min: number; max: number; critical: number } | undefined;
+  value: number;
+  dataPoints?: number;
+  threshold: {
+    min: number;
+    max: number;
+    critical: number;
+  };
 }
 
 interface ThingSpeakEntry {
@@ -25,11 +58,12 @@ interface ThingSpeakResponse {
 interface ExportModalProps {
   isOpen: boolean;
   onClose: () => void;
-  chartRef: React.RefObject<HTMLDivElement | null>;
   chartData: DataItem[];
   xKey: string;
   currentOverview: string;
   dateRange: string;
+  viewType: string;
+  chartRef: React.RefObject<HTMLDivElement | null>;
 }
 
 interface DatePickerProps {
@@ -37,6 +71,17 @@ interface DatePickerProps {
   onDateSelect: (date: string) => void;
   isVisible: boolean;
   setIsVisible: (visible: boolean) => void;
+}
+
+interface DateRange {
+  start: Date;
+  end: Date;
+}
+
+// Add ThingSpeakData type
+interface ThingSpeakData {
+  created_at: string;
+  field2: string;
 }
 
 // API Configuration
@@ -47,13 +92,34 @@ const THINGSPEAK_CONFIG = {
   baseUrl: 'https://api.thingspeak.com/channels'
 };
 
+// Add humidity thresholds
+const HUMIDITY_THRESHOLDS = {
+  min: 40, // Minimum optimal humidity
+  max: 80, // Maximum optimal humidity
+  critical: 90, // Critical humidity
+};
+
+// Update the color constants
+const HUMIDITY_COLORS = {
+  primary: "#3B82F6", // Blue
+  min: "#60A5FA", // Light Blue
+  max: "#1D4ED8", // Dark Blue
+  critical: "#7C3AED", // Purple
+  background: "#DBEAFE", // Light Blue
+  text: "#1E40AF", // Dark Blue
+};
+
 // Utility Functions
 const getTimescaleForPeriod = (period: string): number => {
   switch (period) {
-    case 'days': return 86400; // 24 hours in seconds
-    case 'weeks': return 604800; // 7 days in seconds
-    case 'months': return 2592000; // 30 days in seconds
-    default: return 86400;
+    case "hourly":
+      return 86400; // 24 hours
+    case "weekly":
+      return 604800; // 7 days
+    case "monthly":
+      return 2592000; // 30 days
+    default:
+      return 86400;
   }
 };
 
@@ -126,198 +192,278 @@ const getDayOfWeekName = (dayIndex: number): string => {
   return dayNames[dayIndex];
 };
 
-const processHumidityData = (response: ThingSpeakResponse, period: string): { chartData: DataItem[]; xKey: string; dateRange: string } => {
-  if (!response.feeds || response.feeds.length === 0) {
+const processHumidityData = (
+  data: ThingSpeakData[],
+  period: string,
+  dateRange?: DateRange
+): {
+  chartData: DataItem[];
+  xKey: string;
+  dateRange: string;
+} => {
+  if (!data || data.length === 0) {
     return getDefaultData(period);
   }
 
-  // Get the latest date from the data and convert to Philippine time
-  const latestEntry = response.feeds[response.feeds.length - 1];
+  // Log the first and last few entries from the API
+  console.log("API Data Sample:", {
+    firstEntry: data[0],
+    lastEntry: data[data.length - 1],
+    totalEntries: data.length,
+  });
+
+  const latestEntry = data[data.length - 1];
   const latestDate = convertToPhilippineTime(latestEntry.created_at);
   
   let chartData: DataItem[] = [];
-  let xKey = '';
-  let dateRange = '';
+  let xKey = "";
+  let dateRangeStr = "";
 
   switch (period) {
-    case 'days': {
-      // Process daily averages
-      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-      const dayData: { [key: string]: { sum: number; count: number; dates: string[] } } = {};
+    case "hourly": {
+      // Process hourly data
+      const hourlyData: { [key: string]: { sum: number; count: number; dates: string[] } } = {};
       
-      // Initialize all days
-      dayNames.forEach(day => {
-        dayData[day] = { sum: 0, count: 0, dates: [] };
-      });
+      // Initialize all hours
+      for (let i = 0; i < 24; i++) {
+        hourlyData[i.toString()] = { sum: 0, count: 0, dates: [] };
+      }
       
-      // Process the averaged data
-      response.feeds.forEach(entry => {
+      // Process the data
+      data.forEach(entry => {
         if (entry.field2) {
           const entryDate = convertToPhilippineTime(entry.created_at);
-          const dayName = dayNames[entryDate.getDay()];
+          const hour = entryDate.getHours().toString();
           const value = parseFloat(entry.field2);
-          const dateStr = entryDate.toLocaleDateString('en-PH');
+          const dateStr = entryDate.toLocaleTimeString('en-PH');
           
           if (!isNaN(value)) {
-            dayData[dayName].sum += value;
-            dayData[dayName].count += 1;
-            if (!dayData[dayName].dates.includes(dateStr)) {
-              dayData[dayName].dates.push(dateStr);
+            hourlyData[hour].sum += value;
+            hourlyData[hour].count += 1;
+            if (!hourlyData[hour].dates.includes(dateStr)) {
+              hourlyData[hour].dates.push(dateStr);
             }
           }
         }
       });
       
       // Create chart data with averages
-      chartData = dayNames.map(day => ({
-        day,
-        value: dayData[day].count > 0 ? Math.round(dayData[day].sum / dayData[day].count * 10) / 10 : 0,
-        dataPoints: dayData[day].count,
-        dates: dayData[day].dates.join(', ')
+      chartData = Object.entries(hourlyData).map(([hour, data]) => ({
+        hour,
+        value: data.count > 0 ? Math.round(data.sum / data.count * 10) / 10 : 0,
+        dataPoints: data.count,
+        dates: data.dates.join(', '),
+        threshold: {
+          min: HUMIDITY_THRESHOLDS.min,
+          max: HUMIDITY_THRESHOLDS.max,
+          critical: HUMIDITY_THRESHOLDS.critical,
+        },
       }));
       
-      // Set date range for the last 7 days
+      // Set date range for the last 24 hours
       const endDate = new Date(latestDate);
       const startDate = new Date(endDate);
-      startDate.setDate(startDate.getDate() - 6);
-      dateRange = formatDateRange(startDate, endDate);
-      xKey = 'day';
+      startDate.setDate(startDate.getDate() - 1);
+      dateRangeStr = formatDateRange(startDate, endDate);
+      xKey = 'hour';
       break;
     }
     
-    case 'weeks': {
-      // Process weekly averages
-      const weeksData: { [key: string]: { sum: number; count: number } } = {};
-      
-      // Get last 4 weeks from latest date
-      for (let i = 3; i >= 0; i--) {
-        const weekDate = new Date(latestDate);
-        weekDate.setDate(weekDate.getDate() - (i * 7));
-        const { start, end } = getWeekRange(weekDate);
-        const weekLabel = `Week ${4 - i}`;
-        weeksData[weekLabel] = { sum: 0, count: 0 };
-        
-        response.feeds.forEach(entry => {
-          const entryDate = convertToPhilippineTime(entry.created_at);
-          if (entryDate >= start && entryDate <= end && entry.field2) {
-            const value = parseFloat(entry.field2);
-            if (!isNaN(value)) {
-              weeksData[weekLabel].sum += value;
-              weeksData[weekLabel].count += 1;
-            }
-          }
-        });
-      }
-      
-      const firstWeekDate = new Date(latestDate);
-      firstWeekDate.setDate(firstWeekDate.getDate() - 21);
-      const { start } = getWeekRange(firstWeekDate);
-      const { end } = getWeekRange(latestDate);
-      dateRange = formatDateRange(start, end);
-      
-      chartData = Object.keys(weeksData).map(week => ({
-        week,
-        value: weeksData[week].count > 0 ? Math.round(weeksData[week].sum / weeksData[week].count * 10) / 10 : 0
+    case "weekly": {
+      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const now = dateRange?.start || new Date();
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay()); // Start from Sunday
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6); // End on Saturday
+
+      // Initialize data for each day of the week
+      const weeklyData = dayNames.map((day) => ({
+        day,
+        value: 0,
+        count: 0,
       }));
-      xKey = 'week';
-      break;
+
+      // Process entries for the week
+      data.forEach((entry) => {
+        const entryDate = new Date(entry.created_at);
+        if (entryDate >= startOfWeek && entryDate <= endOfWeek) {
+          const dayIndex = entryDate.getDay(); // 0 for Sunday, 6 for Saturday
+          weeklyData[dayIndex].value += parseFloat(entry.field2);
+          weeklyData[dayIndex].count += 1;
+        }
+      });
+
+      // Calculate averages and format data with threshold
+      const processedData: DataItem[] = weeklyData.map((day) => ({
+        day: day.day,
+        value: day.count > 0 ? day.value / day.count : 0,
+        threshold: {
+          min: HUMIDITY_THRESHOLDS.min,
+          max: HUMIDITY_THRESHOLDS.max,
+          critical: HUMIDITY_THRESHOLDS.critical,
+        },
+      }));
+
+      return {
+        chartData: processedData,
+        xKey: "day",
+        dateRange: `${startOfWeek.toLocaleDateString()} - ${endOfWeek.toLocaleDateString()}`,
+      };
     }
     
-    case 'months': {
+    case "monthly": {
       // Process monthly averages
       const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       const monthsData: { [key: string]: { sum: number; count: number } } = {};
       
-      // Get last 12 months from latest date
+      // Initialize last 12 months
       for (let i = 11; i >= 0; i--) {
         const monthDate = new Date(latestDate);
         monthDate.setMonth(monthDate.getMonth() - i);
-        const { start, end } = getMonthRange(monthDate);
         const monthLabel = monthNames[monthDate.getMonth()];
         monthsData[monthLabel] = { sum: 0, count: 0 };
-        
-        response.feeds.forEach(entry => {
-          const entryDate = convertToPhilippineTime(entry.created_at);
-          if (entryDate >= start && entryDate <= end && entry.field2) {
-            const value = parseFloat(entry.field2);
-            if (!isNaN(value)) {
-              monthsData[monthLabel].sum += value;
-              monthsData[monthLabel].count += 1;
-            }
-          }
-        });
       }
       
-      const firstMonthDate = new Date(latestDate);
-      firstMonthDate.setMonth(firstMonthDate.getMonth() - 11);
-      const { start } = getMonthRange(firstMonthDate);
-      const { end } = getMonthRange(latestDate);
-      dateRange = formatDateRange(start, end);
+      // Process the data
+      data.forEach(entry => {
+        if (entry.field2) {
+          const entryDate = convertToPhilippineTime(entry.created_at);
+          const monthLabel = monthNames[entryDate.getMonth()];
+          const value = parseFloat(entry.field2);
+          
+          if (!isNaN(value) && monthsData[monthLabel]) {
+            monthsData[monthLabel].sum += value;
+            monthsData[monthLabel].count += 1;
+          }
+        }
+      });
+      
+      const firstMonth = new Date(latestDate);
+      firstMonth.setMonth(firstMonth.getMonth() - 11, 1);
+      const lastMonth = new Date(latestDate);
+      lastMonth.setMonth(lastMonth.getMonth() + 1, 0);
+      dateRangeStr = formatDateRange(firstMonth, lastMonth);
       
       chartData = monthNames.map(month => ({
         month,
-        value: monthsData[month].count > 0 ? Math.round(monthsData[month].sum / monthsData[month].count * 10) / 10 : 0
+        value: monthsData[month].count > 0 ? Math.round(monthsData[month].sum / monthsData[month].count * 10) / 10 : 0,
+        dataPoints: monthsData[month].count,
+        threshold: {
+          min: HUMIDITY_THRESHOLDS.min,
+          max: HUMIDITY_THRESHOLDS.max,
+          critical: HUMIDITY_THRESHOLDS.critical,
+        },
       }));
       xKey = 'month';
       break;
     }
   }
 
-  return { chartData, xKey, dateRange };
+  return { chartData, xKey, dateRange: dateRangeStr };
 };
 
-const getDefaultData = (period: string): { chartData: DataItem[]; xKey: string; dateRange: string } => {
-  const today = getCurrentPhilippineTime();
-  
+const getDefaultData = (period: string, baseDate?: Date): { chartData: DataItem[]; xKey: string; dateRange: string } => {
+  const today = baseDate ? new Date(baseDate) : getCurrentPhilippineTime();
+  const defaultThreshold = {
+    min: HUMIDITY_THRESHOLDS.min,
+    max: HUMIDITY_THRESHOLDS.max,
+    critical: HUMIDITY_THRESHOLDS.critical,
+  };
   switch (period) {
-    case 'days': {
-      // Use May 25-31, 2025 as default range
-      const startDate = new Date(2025, 4, 25);
-      const endDate = new Date(2025, 4, 31);
+    case 'hourly': {
+      const currentDate = new Date(today);
+      const dayOfWeek = currentDate.getDay();
+      const startOfWeek = new Date(currentDate);
+      startOfWeek.setDate(currentDate.getDate() - dayOfWeek);
+      startOfWeek.setHours(0, 0, 0, 0);
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      const dayNames = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+      ];
+      const chartData = dayNames.map((day) => ({
+        day,
+        value: 0,
+        dataPoints: 0,
+        dates: "",
+        threshold: defaultThreshold,
+      }));
       return {
-        chartData: [
-          { day: "Sunday", value: 25.2, dataPoints: 12, dates: "May 25, 2025" },
-          { day: "Monday", value: 26.8, dataPoints: 15, dates: "May 26, 2025" },
-          { day: "Tuesday", value: 24.5, dataPoints: 18, dates: "May 27, 2025" },
-          { day: "Wednesday", value: 27.1, dataPoints: 14, dates: "May 28, 2025" },
-          { day: "Thursday", value: 25.9, dataPoints: 16, dates: "May 29, 2025" },
-          { day: "Friday", value: 26.3, dataPoints: 13, dates: "May 30, 2025" },
-          { day: "Saturday", value: 25.7, dataPoints: 17, dates: "May 31, 2025" },
-        ],
+        chartData,
         xKey: 'day',
-        dateRange: formatDateRange(startDate, endDate)
+        dateRange: formatDateRange(startOfWeek, endOfWeek),
       };
     }
-    case 'weeks': {
-      const firstWeekDate = new Date(today);
-      firstWeekDate.setDate(firstWeekDate.getDate() - 21);
-      const { start } = getWeekRange(firstWeekDate);
-      const { end } = getWeekRange(today);
+    case 'weekly': {
+      const weeks = [];
+      let start = new Date(today);
+      start.setHours(0, 0, 0, 0);
+      for (let i = 3; i >= 0; i--) {
+        const weekStart = new Date(start);
+        weekStart.setDate(start.getDate() - i * 7 - start.getDay());
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+        weeks.push({
+          week: `Week ${4 - i}`,
+          value: 0,
+          dataPoints: 0,
+          threshold: defaultThreshold,
+        });
+      }
+      const firstWeekStart = new Date(start);
+      firstWeekStart.setDate(start.getDate() - 21 - start.getDay());
+      const lastWeekEnd = new Date(start);
+      lastWeekEnd.setDate(start.getDate() + 6 - start.getDay());
       return {
-        chartData: [
-          { week: "Week 1", value: 24.8 },
-          { week: "Week 2", value: 26.2 },
-          { week: "Week 3", value: 25.5 },
-          { week: "Week 4", value: 26.7 },
-        ],
+        chartData: weeks,
         xKey: 'week',
-        dateRange: formatDateRange(start, end)
+        dateRange: formatDateRange(firstWeekStart, lastWeekEnd),
       };
     }
-    case 'months': {
-      const firstMonthDate = new Date(today);
-      firstMonthDate.setMonth(firstMonthDate.getMonth() - 11);
-      const { start } = getMonthRange(firstMonthDate);
-      const { end } = getMonthRange(today);
+    case 'monthly': {
+      const monthNames = [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+      ];
+      const chartData = [];
+      let monthCursor = new Date(today);
+      monthCursor.setDate(1);
+      monthCursor.setHours(0, 0, 0, 0);
+      for (let i = 11; i >= 0; i--) {
+        const month = new Date(monthCursor);
+        month.setMonth(monthCursor.getMonth() - i);
+        chartData.push({
+          month: monthNames[month.getMonth()],
+          value: 0,
+          dataPoints: 0,
+          threshold: defaultThreshold,
+        });
+      }
+      const firstMonth = new Date(today);
+      firstMonth.setMonth(firstMonth.getMonth() - 11, 1);
+      const lastMonth = new Date(today);
+      lastMonth.setMonth(lastMonth.getMonth() + 1, 0);
       return {
-        chartData: [
-          { month: "Jan", value: 23.5 }, { month: "Feb", value: 24.1 }, { month: "Mar", value: 25.8 },
-          { month: "Apr", value: 27.2 }, { month: "May", value: 28.9 }, { month: "Jun", value: 30.1 },
-          { month: "Jul", value: 31.5 }, { month: "Aug", value: 30.8 }, { month: "Sep", value: 29.2 },
-          { month: "Oct", value: 27.6 }, { month: "Nov", value: 25.3 }, { month: "Dec", value: 24.0 },
-        ],
+        chartData,
         xKey: 'month',
-        dateRange: formatDateRange(start, end)
+        dateRange: formatDateRange(firstMonth, lastMonth),
       };
     }
     default:
@@ -332,51 +478,30 @@ const DatePicker: React.FC<DatePickerProps> = ({
   isVisible,
   setIsVisible,
 }) => {
-  if (!isVisible) return null;
-
-  const currentDate = getCurrentPhilippineTime();
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const firstDay = new Date(year, month, 1).getDay();
-
-  const days: React.ReactElement[] = [];
-
-  for (let i = 0; i < firstDay; i++) {
-    days.push(<div key={`empty-${i}`} className="h-8 w-8"></div>);
-  }
-
-  for (let i = 1; i <= daysInMonth; i++) {
-    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(i).padStart(2, "0")}`;
-    days.push(
-      <button
-        key={i}
-        onClick={() => {
-          onDateSelect(dateStr);
-          setIsVisible(false);
-        }}
-        className={`h-8 w-8 rounded-full hover:bg-[#79A842] hover:text-white ${
-          dateStr === selectedDate ? "bg-[#356B2C] text-white" : ""
-          }`}
-      >
-        {i}
-      </button>
-    );
-  }
-
   return (
-    <div className="absolute z-10 mt-1 p-2 bg-white border border-[#356B2C] rounded-md shadow-lg">
-      <div className="text-center font-bold mb-2 text-[#356B2C]">
-        {new Date(year, month).toLocaleString("default", { month: "long" })} {year}
-      </div>
-      <div className="grid grid-cols-7 gap-1 text-center">
-        {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((day) => (
-          <div key={day} className="font-semibold text-[#356B2C]">
-            {day}
-          </div>
-        ))}
-        {days}
-      </div>
+    <div className="relative">
+      <input
+        type="text"
+        value={selectedDate}
+        readOnly
+        className="w-full p-2 border border-gray-300 rounded-md cursor-pointer focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        onClick={() => setIsVisible(!isVisible)}
+      />
+      <CalendarIcon
+        size={16}
+        className="absolute right-3 top-3 text-gray-400"
+      />
+      {isVisible && (
+        <CalendarPicker
+          selectedDate={new Date(selectedDate)}
+          onDateSelect={(date) => {
+            onDateSelect(date.toISOString().split('T')[0]);
+            setIsVisible(false);
+          }}
+          isVisible={isVisible}
+          setIsVisible={setIsVisible}
+        />
+      )}
     </div>
   );
 };
@@ -385,63 +510,169 @@ const DatePicker: React.FC<DatePickerProps> = ({
 const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
   onClose,
-  chartRef,
   chartData,
   xKey,
   currentOverview,
   dateRange,
+  viewType,
+  chartRef,
 }) => {
-  const [exportFormat, setExportFormat] = useState<string>("PDF");
-  const [timeFrame, setTimeFrame] = useState<string>("current");
-  const [exportType, setExportType] = useState<string>("predefined");
-  const [startDate, setStartDate] = useState<string>("");
-  const [endDate, setEndDate] = useState<string>("");
+  const [exportFormat, setExportFormat] = useState<string>("CSV");
+  const [exportType, setExportType] = useState<string>("current");
+  const [startDate, setStartDate] = useState<Date>(new Date());
+  const [endDate, setEndDate] = useState<Date>(new Date());
   const [showStartCalendar, setShowStartCalendar] = useState<boolean>(false);
   const [showEndCalendar, setShowEndCalendar] = useState<boolean>(false);
   const [isLoadingExport, setIsLoadingExport] = useState<boolean>(false);
 
-  useEffect(() => {
-    if (isOpen) {
-      setTimeFrame("current");
-    }
-  }, [isOpen]);
-
-  const handleExportClick = async () => {
+  const handleExport = async () => {
     setIsLoadingExport(true);
     
     try {
-      // Create export data
-      const exportData = {
-      format: exportFormat.toLowerCase(),
-        data: chartData,
-        key: xKey,
-        title: "Humidity Data",
-        dateRange: exportType === "custom" ? { from: startDate, to: endDate } : dateRange,
-        timeFrame: timeFrame === "current" ? currentOverview : timeFrame
-      };
-
-      // Simulate export process
-      console.log("Exporting humidity data:", exportData);
-      
-      // For demonstration, create a simple CSV export
       if (exportFormat === "CSV") {
-        const csvContent = [
-          [xKey.charAt(0).toUpperCase() + xKey.slice(1), "Humidity (%)"],
-          ...chartData.map(item => [item[xKey], item.value])
-        ].map(row => row.join(",")).join("\n");
+        // Create CSV content with headers
+        const headers = [
+          xKey.charAt(0).toUpperCase() + xKey.slice(1),
+          "Humidity",
+          "Data Points",
+          "Status",
+          "Thresholds"
+        ];
         
-        const blob = new Blob([csvContent], { type: "text/csv" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `humidity-data-${currentOverview}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
+        const rows = chartData.map((item) => {
+          const value = item.value as number;
+          const threshold = (item as any).threshold as {
+            min: number;
+            max: number;
+            critical: number;
+          };
+          let status = "Normal";
+          if (value < threshold.min) status = "Too Dry";
+          else if (value > threshold.critical) status = "Critical";
+          else if (value > threshold.max) status = "Too Humid";
+          
+          return [
+            item[xKey],
+            value.toFixed(1),
+            item.dataPoints || "N/A",
+            status,
+            `Min: ${threshold.min}, Max: ${threshold.max}, Critical: ${threshold.critical}`
+          ];
+        });
+
+        const csvContent = [
+          headers.join(","),
+          ...rows.map(row => row.join(","))
+        ].join("\n");
+        
+        const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
+        saveAs(blob, `humidity-data-${currentOverview}-${viewType}-${new Date().toISOString().split('T')[0]}.csv`);
+      } else if (exportFormat === "PDF") {
+        if (!chartRef.current) {
+          throw new Error("Chart reference not found");
+        }
+
+        // Create a temporary container for the chart
+        const container = document.createElement('div');
+        container.style.width = '1200px';
+        container.style.height = '800px';
+        container.style.position = 'absolute';
+        container.style.left = '-9999px';
+        container.style.top = '-9999px';
+        document.body.appendChild(container);
+
+        // Clone the chart content
+        const chartClone = chartRef.current.cloneNode(true) as HTMLElement;
+        container.appendChild(chartClone);
+
+        try {
+          const canvas = await html2canvas(container, {
+            scale: 2,
+            useCORS: true,
+            logging: false,
+            width: 1200,
+            height: 800,
+            backgroundColor: '#ffffff'
+          });
+
+          const imgData = canvas.toDataURL('image/png');
+          const pdf = new jsPDF({
+            orientation: 'landscape',
+            unit: 'mm',
+            format: 'a4',
+          });
+
+          const pdfWidth = pdf.internal.pageSize.getWidth();
+          const pdfHeight = pdf.internal.pageSize.getHeight();
+          const imgWidth = canvas.width;
+          const imgHeight = canvas.height;
+          const ratio = Math.min(pdfWidth / imgWidth, pdfHeight / imgHeight);
+
+          const imgX = (pdfWidth - imgWidth * ratio) / 2;
+          const imgY = 20;
+
+          // Add title
+          pdf.setFontSize(16);
+          pdf.setTextColor(124, 58, 237); // #7C3AED
+          pdf.text('Humidity Dashboard', pdfWidth / 2, 15, { align: 'center' });
+
+          // Add subtitle
+          pdf.setFontSize(12);
+          pdf.setTextColor(75, 85, 99); // text-gray-600
+          pdf.text(`${currentOverview.charAt(0).toUpperCase() + currentOverview.slice(1)} View - ${dateRange}`, pdfWidth / 2, 25, { align: 'center' });
+
+          // Add chart
+          pdf.addImage(imgData, 'PNG', imgX, imgY, imgWidth * ratio, imgHeight * ratio);
+
+          // Add footer
+          pdf.setFontSize(10);
+          pdf.setTextColor(107, 114, 128); // text-gray-500
+          pdf.text(`Generated on ${new Date().toLocaleString()}`, pdfWidth / 2, pdfHeight - 10, { align: 'center' });
+
+          pdf.save(`humidity-dashboard-${currentOverview}-${viewType}-${new Date().toISOString().split('T')[0]}.pdf`);
+        } finally {
+          // Clean up
+          document.body.removeChild(container);
+        }
+      } else if (exportFormat === "SVG") {
+        if (!chartRef.current) {
+          throw new Error("Chart reference not found");
+        }
+
+        const svgElement = chartRef.current.querySelector('svg');
+        if (!svgElement) {
+          throw new Error("SVG element not found");
+        }
+
+        // Create a temporary container for the SVG
+        const container = document.createElement('div');
+        container.style.width = '1200px';
+        container.style.height = '800px';
+        container.style.position = 'absolute';
+        container.style.left = '-9999px';
+        container.style.top = '-9999px';
+        document.body.appendChild(container);
+
+        // Clone the SVG
+        const svgClone = svgElement.cloneNode(true) as SVGElement;
+        svgClone.setAttribute('width', '1200');
+        svgClone.setAttribute('height', '800');
+        container.appendChild(svgClone);
+
+        try {
+          const svgData = new XMLSerializer().serializeToString(svgClone);
+          const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+          saveAs(svgBlob, `humidity-chart-${currentOverview}-${viewType}-${new Date().toISOString().split('T')[0]}.svg`);
+        } finally {
+          // Clean up
+          document.body.removeChild(container);
+        }
       }
-    
-    onClose();
+      
+      onClose();
     } catch (error) {
       console.error("Export failed:", error);
+      alert("Export failed. Please try again.");
     } finally {
       setIsLoadingExport(false);
     }
@@ -450,315 +681,630 @@ const ExportModal: React.FC<ExportModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-lg max-w-md w-96 p-4">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="font-semibold text-[#356B2C]">Export Humidity Data</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
-            <X size={18} />
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-2xl max-w-md w-full mx-4 p-6">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-lg font-semibold text-gray-800">
+            Export Humidity Data
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700 transition-colors"
+          >
+            <X size={20} />
           </button>
         </div>
 
-        <div className="mb-4">
-          <label className="block text-sm text-[#356B2C] mb-1">Export Format</label>
-          <div className="flex gap-2">
-            {["PDF", "CSV", "SVG"].map((format) => (
-              <button
-                key={format}
-                onClick={() => setExportFormat(format)}
-                className={`px-3 py-1 rounded-md text-sm flex-1 ${exportFormat === format
-                    ? "bg-[#79A842] text-white"
-                    : "bg-gray-100 text-[#356B2C] hover:bg-gray-200"
-                  }`}
-              >
-                {format}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="mb-4">
-          <label className="block text-sm text-[#356B2C] mb-1">Export Type</label>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setExportType("predefined")}
-              className={`px-3 py-1 rounded-md text-sm flex-1 ${exportType === "predefined"
-                  ? "bg-[#79A842] text-white"
-                  : "bg-gray-100 text-[#356B2C] hover:bg-gray-200"
-                }`}
-            >
-              Predefined Period
-            </button>
-            <button
-              onClick={() => setExportType("custom")}
-              className={`px-3 py-1 rounded-md text-sm flex-1 ${exportType === "custom"
-                  ? "bg-[#79A842] text-white"
-                  : "bg-gray-100 text-[#356B2C] hover:bg-gray-200"
-                }`}
-            >
-              Custom Range
-            </button>
-          </div>
-        </div>
-
-        {exportType === "predefined" ? (
-          <div className="mb-4">
-            <label className="block text-sm text-[#356B2C] mb-1">Time Frame</label>
-            <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Export Format
+            </label>
+            <div className="grid grid-cols-3 gap-2">
               {[
-                { value: "current", label: `Current (${currentOverview})` },
-                { value: "days", label: "Days" },
-                { value: "weeks", label: "Weeks" },
-                { value: "months", label: "Months" },
-              ].map((option) => (
+                { format: "CSV", icon: <FileText size={16} />, label: "CSV" },
+                { format: "PDF", icon: <FileText size={16} />, label: "PDF" },
+                { format: "SVG", icon: <FileText size={16} />, label: "SVG" },
+              ].map(({ format, icon, label }) => (
                 <button
-                  key={option.value}
-                  onClick={() => setTimeFrame(option.value)}
-                  className={`px-3 py-1 rounded-md text-sm ${timeFrame === option.value
-                      ? "bg-[#79A842] text-white"
-                      : "bg-gray-100 text-[#356B2C] hover:bg-gray-200"
-                    }`}
+                  key={format}
+                  onClick={() => setExportFormat(format)}
+                  className={`px-3 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                    exportFormat === format
+                      ? "bg-purple-100 text-purple-600 border-2 border-purple-600"
+                      : "bg-gray-50 text-gray-700 hover:bg-gray-100 border-2 border-transparent"
+                  }`}
                 >
-                  {option.label}
+                  {icon}
+                  <span>{label}</span>
                 </button>
               ))}
             </div>
           </div>
-        ) : (
-          <div className="mb-4">
-            {["Start", "End"].map((label, i) => {
-              const isStart = label === "Start";
-              const value = isStart ? startDate : endDate;
-              const setValue = isStart ? setStartDate : setEndDate;
-              const toggle = isStart ? showStartCalendar : showEndCalendar;
-              const setToggle = isStart ? setShowStartCalendar : setShowEndCalendar;
-              return (
-                <div key={label} className="mb-2">
-                  <label className="block text-sm text-[#356B2C] mb-1">{label} Date</label>
-                  <div className="relative">
-                    <div className="flex items-center">
-                      <input
-                        type="text"
-                        value={value}
-                        onChange={(e) => setValue(e.target.value)}
-                        placeholder="YYYY-MM-DD"
-                        className="w-full p-2 border border-[#356B2C] rounded text-sm"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setToggle(!toggle)}
-                        className="absolute right-2 text-[#356B2C]"
-                      >
-                        <Calendar size={16} />
-                      </button>
-                    </div>
-                    <DatePicker
-                      selectedDate={value}
-                      onDateSelect={setValue}
-                      isVisible={toggle}
-                      setIsVisible={setToggle}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+
+          <div className="p-3 bg-gray-50 rounded-md border border-gray-200">
+            <p className="text-sm text-gray-600">
+              <strong>Current Range:</strong> {dateRange}
+            </p>
+            <p className="text-sm text-gray-600">
+              <strong>View:</strong> {currentOverview} ({viewType})
+            </p>
           </div>
-        )}
 
-        <div className="mb-4 p-3 bg-gray-50 rounded text-sm text-[#356B2C]">
-          <strong>Current Range (Philippine Time):</strong> {dateRange}
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 border border-[#356B2C] rounded-md text-[#356B2C] text-sm hover:bg-gray-50"
-            disabled={isLoadingExport}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleExportClick}
-            className="px-4 py-2 bg-[#356B2C] rounded-md text-white text-sm hover:bg-[#2a5823] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            disabled={isLoadingExport}
-          >
-            {isLoadingExport ? (
-              <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                Exporting...
-              </>
-            ) : (
-              "Export"
-            )}
-          </button>
+          <div className="flex justify-end gap-3 pt-4">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
+              disabled={isLoadingExport}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleExport}
+              className="px-4 py-2 bg-[#8B5C2A] text-white rounded-md hover:bg-[#A9743A] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+              disabled={isLoadingExport}
+            >
+              {isLoadingExport ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  <span>Exporting...</span>
+                </>
+              ) : (
+                <>
+                  <Download size={16} />
+                  <span>Export</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
 };
 
-// Custom Tooltip Component
+// Custom Tooltip
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
     const data = payload[0].payload;
+    const value = payload[0].value;
+    const threshold = data.threshold;
+    let status = "Normal";
+    let statusColor = "text-green-600";
+    let statusIcon = <Droplet className="w-4 h-4" />;
+    if (value < threshold.min) {
+      status = "Too Dry";
+      statusColor = "text-blue-600";
+    } else if (value > threshold.critical) {
+      status = "Critical";
+      statusColor = "text-purple-600";
+    } else if (value > threshold.max) {
+      status = "Too Humid";
+      statusColor = "text-blue-800";
+    }
     return (
-      <div className="bg-[#E6F0D3] border border-[#356B2C] rounded p-3 shadow-lg">
-        <p className="text-[#356B2C] font-semibold">{`${label}`}</p>
-        <p className="text-[#356B2C]">{`Humidity: ${payload[0].value}%`}</p>
+      <div className="bg-white border border-gray-200 rounded-lg p-3 shadow-lg">
+        <div className="flex items-center gap-2 mb-2">
+          <div className={`p-2 rounded-full ${HUMIDITY_COLORS.background}`}>
+            <Droplet className={`w-4 h-4 ${HUMIDITY_COLORS.text}`} />
+          </div>
+          <p className="font-semibold text-gray-800">{label}</p>
+        </div>
+        <p className={`text-[${HUMIDITY_COLORS.primary}]`}>{`Humidity: ${value}%`}</p>
+        <p className={`${statusColor} text-sm flex items-center gap-1`}>
+          {statusIcon}
+          {`Status: ${status}`}
+        </p>
         {data.dataPoints !== undefined && (
-          <p className="text-[#356B2C] text-xs">{`Data Points: ${data.dataPoints}`}</p>
+          <p className="text-gray-500 text-sm">{`Data Points: ${data.dataPoints}`}</p>
         )}
-        {data.dates && (
-          <p className="text-[#356B2C] text-xs">{`Dates: ${data.dates}`}</p>
-        )}
+        <div className="mt-2 text-xs text-gray-500">
+          <p>Thresholds:</p>
+          <p className="text-[#60A5FA]">Min: {threshold.min}%</p>
+          <p className="text-[#1D4ED8]">Max: {threshold.max}%</p>
+          <p className="text-[#7C3AED]">Critical: {threshold.critical}%</p>
+        </div>
       </div>
     );
   }
   return null;
 };
 
+// Add the date range utility functions
+const getPreviousWeek = (date: Date): DateRange => {
+  const start = new Date(date);
+  start.setDate(start.getDate() - 7);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { start, end };
+};
+
+const getNextWeek = (date: Date): DateRange => {
+  const start = new Date(date);
+  start.setDate(start.getDate() + 7);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { start, end };
+};
+
+const getPreviousMonth = (date: Date): DateRange => {
+  const start = new Date(date);
+  start.setMonth(start.getMonth() - 1);
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+  end.setDate(0);
+  return { start, end };
+};
+
+const getNextMonth = (date: Date): DateRange => {
+  const start = new Date(date);
+  start.setMonth(start.getMonth() + 1);
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+  end.setDate(0);
+  return { start, end };
+};
+
 // Main Component
-const HumidityChart = () => {
-  const [overview, setOverview] = useState<string>("days");
+const HumidityDashboard = () => {
+  const [overview, setOverview] = useState<string>("hourly");
+  const [viewType, setViewType] = useState<string>("chart");
   const [chartData, setChartData] = useState<DataItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dateRange, setDateRange] = useState<string>("");
-  const chartRef = useRef<HTMLDivElement>(null);
+  const [xKey, setXKey] = useState<string>("hour");
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
-  const [xKey, setXKey] = useState<string>("day");
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [customDateRange, setCustomDateRange] = useState<DateRange | undefined>(undefined);
+  const chartRef = useRef<HTMLDivElement | null>(null);
+
+  const fetchDataForPeriod = async (date?: Date, range?: DateRange) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetchThingSpeakData(overview);
+      const {
+        chartData: newData,
+        xKey: newXKey,
+        dateRange: newDateRange,
+      } = processHumidityData(response.feeds, overview, range);
+      setChartData(newData);
+      setXKey(newXKey);
+      setDateRange(newDateRange);
+      setLastUpdated(new Date());
+    } catch (error) {
+      console.error("Error fetching humidity data:", error);
+      setError("Failed to fetch live data. Showing sample data.");
+      let baseDate = date;
+      if (!baseDate && range) baseDate = range.start;
+      const {
+        chartData: defaultData,
+        xKey: defaultXKey,
+        dateRange: defaultDateRange,
+      } = getDefaultData(overview, baseDate);
+      setChartData(defaultData);
+      setXKey(defaultXKey);
+      setDateRange(defaultDateRange);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleFetchData = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    void fetchDataForPeriod(selectedDate, customDateRange);
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      setIsLoading(true);
-      setError(null);
-      
-      try {
-        const response = await fetchThingSpeakData(overview);
-        const { chartData: newData, xKey: newXKey, dateRange: newDateRange } = processHumidityData(response, overview);
-        
-        setChartData(newData);
-        setXKey(newXKey);
-        setDateRange(newDateRange);
-      } catch (error) {
-        console.error("Error fetching humidity data:", error);
-        setError("Failed to fetch live data. Showing sample data.");
-        
-        // Use default data as fallback
-        const { chartData: defaultData, xKey: defaultXKey, dateRange: defaultDateRange } = getDefaultData(overview);
-        setChartData(defaultData);
-        setXKey(defaultXKey);
-        setDateRange(defaultDateRange);
-      } finally {
-        setIsLoading(false);
+    void fetchDataForPeriod(selectedDate, customDateRange);
+  }, [overview, selectedDate, customDateRange]);
+
+  const handlePreviousPeriod = () => {
+    if (customDateRange) {
+      if (overview === "hourly") {
+        const newDate = new Date(customDateRange.start);
+        newDate.setDate(newDate.getDate() - 1);
+        setCustomDateRange({ start: newDate, end: newDate });
+      } else if (overview === "weekly") {
+        const newRange = getPreviousWeek(customDateRange.start);
+        setCustomDateRange(newRange);
+      } else if (overview === "monthly") {
+        const newRange = getPreviousMonth(customDateRange.start);
+        setCustomDateRange(newRange);
       }
-    };
+    } else {
+      if (overview === "hourly") {
+        const newDate = new Date(selectedDate);
+        newDate.setDate(newDate.getDate() - 1);
+        setSelectedDate(newDate);
+      } else if (overview === "weekly") {
+        const newRange = getPreviousWeek(selectedDate);
+        setSelectedDate(newRange.start);
+      } else if (overview === "monthly") {
+        const newRange = getPreviousMonth(selectedDate);
+        setSelectedDate(newRange.start);
+      }
+    }
+  };
 
-    fetchData();
-  }, [overview]);
+  const handleNextPeriod = () => {
+    if (customDateRange) {
+      if (overview === "hourly") {
+        const newDate = new Date(customDateRange.start);
+        newDate.setDate(newDate.getDate() + 1);
+        setCustomDateRange({ start: newDate, end: newDate });
+      } else if (overview === "weekly") {
+        const newRange = getNextWeek(customDateRange.start);
+        setCustomDateRange(newRange);
+      } else if (overview === "monthly") {
+        const newRange = getNextMonth(customDateRange.start);
+        setCustomDateRange(newRange);
+      }
+    } else {
+      if (overview === "hourly") {
+        const newDate = new Date(selectedDate);
+        newDate.setDate(newDate.getDate() + 1);
+        setSelectedDate(newDate);
+      } else if (overview === "weekly") {
+        const newRange = getNextWeek(selectedDate);
+        setSelectedDate(newRange.start);
+      } else if (overview === "monthly") {
+        const newRange = getNextMonth(selectedDate);
+        setSelectedDate(newRange.start);
+      }
+    }
+  };
 
-  return (
-      <div className="bg-[#E6F0D3] p-4 rounded-2xl">
-      <h2 className="text-[#356B2C] text-lg font-semibold mb-2">Humidity</h2>
-      
-      {error && (
-        <div className="mb-3 p-2 bg-yellow-100 border border-yellow-400 rounded text-yellow-800 text-sm">
-          {error}
-        </div>
-      )}
-  
-        <div className="flex justify-between items-center mb-3">
-          <div>
-            <label htmlFor="overview" className="block text-xs text-[#356B2C] mb-1">
-            View by:
-            </label>
-            <select
-              id="overview"
-            className="text-xs border pl-1 py-2 rounded shadow bg-white text-[#356B2C]"
-              value={overview}
-              onChange={(e) => setOverview(e.target.value)}
-            >
-              <option value="days">Days</option>
-              <option value="weeks">Weeks</option>
-              <option value="months">Months</option>
-            </select>
+  const handleCustomDateSelect = (start: Date, end: Date) => {
+    setCustomDateRange({ start, end });
+  };
+
+  const handleResetDateRange = () => {
+    setCustomDateRange(undefined);
+    setSelectedDate(new Date());
+  };
+
+  const renderChart = () => {
+    if (viewType === "table") {
+      return (
+        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    {xKey.charAt(0).toUpperCase() + xKey.slice(1)}
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Humidity (%)
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Data Points
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Thresholds
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {chartData.map((item, index) => {
+                  const value = item.value as number;
+                  const threshold = (item as any).threshold as {
+                    min: number;
+                    max: number;
+                    critical: number;
+                  };
+                  const label = (item as any)[xKey] as string;
+                  let status = "Normal";
+                  let statusColor = "text-green-600";
+                  if (value < threshold.min) {
+                    status = "Too Dry";
+                    statusColor = "text-blue-600";
+                  } else if (value > threshold.critical) {
+                    status = "Critical";
+                    statusColor = "text-purple-600";
+                  } else if (value > threshold.max) {
+                    status = "Too Humid";
+                    statusColor = "text-blue-800";
+                  }
+                  return (
+                    <tr key={index} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        {label}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {value}%
+                      </td>
+                      <td className={`px-6 py-4 whitespace-nowrap text-sm ${statusColor}`}>
+                        {status}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {item.dataPoints || "N/A"}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        <div className="text-xs">
+                          <p>Min: {threshold.min}%</p>
+                          <p>Max: {threshold.max}%</p>
+                          <p>Critical: {threshold.critical}%</p>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-  
-          <button
-            onClick={() => setShowExportModal(true)}
-            className="flex items-center gap-1 text-[#356B2C] text-xs hover:bg-[#d6e3bc] px-2 py-1 rounded transition-colors"
-          >
-            <Download size={13} />
-            Export
-          </button>
         </div>
-
-      {dateRange && (
-        <div className="mb-3 text-xs text-[#356B2C] bg-white px-2 py-1 rounded border">
-          <strong>Date Range:</strong> {dateRange}
-        </div>
-      )}
-  
-        <div
-          ref={chartRef}
-          className="bg-white py-9 pr-8 rounded-xl border border-[#356B2C]"
-          style={{ height: 420 }}
-        >
-          {isLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#356B2C]"></div>
-            </div>
-          ) : (
-            <ResponsiveContainer width="100%" height={360}>
+      );
+    }
+    return (
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <ResponsiveContainer width="100%" height={400}>
+          {viewType === "line" ? (
             <LineChart data={chartData}>
-                <XAxis 
-                  dataKey={xKey} 
-                  tick={{ fontSize: 12, fill: '#356B2C' }}
-                  axisLine={{ stroke: '#356B2C' }}
-                />
-                <YAxis 
-                  tick={{ fontSize: 12, fill: '#356B2C' }}
-                  axisLine={{ stroke: '#356B2C' }}
-                  label={{ 
-                  value: 'Humidity (%)', 
-                    angle: -90, 
-                    position: 'insideLeft',
-                    style: { textAnchor: 'middle', fill: '#356B2C' }
-                  }}
-                />
-                <Tooltip 
-                content={<CustomTooltip />}
-                  contentStyle={{ 
-                    backgroundColor: '#E6F0D3',
-                    border: '1px solid #356B2C',
-                    borderRadius: '4px'
-                  }}
-                  labelStyle={{ color: '#356B2C' }}
-                />
-              <Line 
-                type="monotone" 
-                  dataKey="value" 
-                stroke="#79A842" 
+              <XAxis
+                dataKey={xKey}
+                tick={{ fontSize: 12, fill: "#374151" }}
+                axisLine={{ stroke: "#D1D5DB" }}
+              />
+              <YAxis
+                tick={{ fontSize: 12, fill: "#374151" }}
+                axisLine={{ stroke: "#D1D5DB" }}
+                label={{
+                  value: "Humidity (%)",
+                  angle: -90,
+                  position: "insideLeft",
+                  style: { textAnchor: "middle", fill: "#374151" },
+                }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Line
+                type="monotone"
+                dataKey="value"
+                stroke={HUMIDITY_COLORS.primary}
                 strokeWidth={2}
-                dot={{ fill: '#79A842', strokeWidth: 2, r: 4 }}
-                activeDot={{ r: 6, fill: '#356B2C' }}
+                dot={{ fill: HUMIDITY_COLORS.primary, strokeWidth: 2, r: 4 }}
+              />
+              <ReferenceLine
+                y={HUMIDITY_THRESHOLDS.min}
+                stroke={HUMIDITY_COLORS.min}
+                strokeDasharray="3 3"
+                label={{ value: "Min", position: "right", fill: HUMIDITY_COLORS.min }}
+              />
+              <ReferenceLine
+                y={HUMIDITY_THRESHOLDS.max}
+                stroke={HUMIDITY_COLORS.max}
+                strokeDasharray="3 3"
+                label={{ value: "Max", position: "right", fill: HUMIDITY_COLORS.max }}
+              />
+              <ReferenceLine
+                y={HUMIDITY_THRESHOLDS.critical}
+                stroke={HUMIDITY_COLORS.critical}
+                strokeDasharray="3 3"
+                label={{ value: "Critical", position: "right", fill: HUMIDITY_COLORS.critical }}
               />
             </LineChart>
-            </ResponsiveContainer>
+          ) : (
+            <BarChart data={chartData}>
+              <XAxis
+                dataKey={xKey}
+                tick={{ fontSize: 12, fill: "#374151" }}
+                axisLine={{ stroke: "#D1D5DB" }}
+              />
+              <YAxis
+                tick={{ fontSize: 12, fill: "#374151" }}
+                axisLine={{ stroke: "#D1D5DB" }}
+                label={{
+                  value: "Humidity (%)",
+                  angle: -90,
+                  position: "insideLeft",
+                  style: { textAnchor: "middle", fill: "#374151" },
+                }}
+              />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="value" fill={HUMIDITY_COLORS.primary} radius={[4, 4, 0, 0]} />
+              <ReferenceLine
+                y={HUMIDITY_THRESHOLDS.min}
+                stroke={HUMIDITY_COLORS.min}
+                strokeDasharray="3 3"
+                label={{ value: "Min", position: "right", fill: HUMIDITY_COLORS.min }}
+              />
+              <ReferenceLine
+                y={HUMIDITY_THRESHOLDS.max}
+                stroke={HUMIDITY_COLORS.max}
+                strokeDasharray="3 3"
+                label={{ value: "Max", position: "right", fill: HUMIDITY_COLORS.max }}
+              />
+              <ReferenceLine
+                y={HUMIDITY_THRESHOLDS.critical}
+                stroke={HUMIDITY_COLORS.critical}
+                strokeDasharray="3 3"
+                label={{ value: "Critical", position: "right", fill: HUMIDITY_COLORS.critical }}
+              />
+            </BarChart>
           )}
-        </div>
+        </ResponsiveContainer>
+      </div>
+    );
+  };
 
+  return (
+    <div className="max-w-7xl mx-auto p-6 space-y-6">
+      {/* Header */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="flex items-center gap-3">
+            <div className={`p-3 rounded-full ${HUMIDITY_COLORS.background}`}>
+              <Droplet className={`w-6 h-6 ${HUMIDITY_COLORS.text}`} />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">
+                Humidity Dashboard
+              </h2>
+              <p className="text-sm text-gray-500">
+                Last updated: {lastUpdated.toLocaleTimeString()}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleFetchData}
+              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+              title="Refresh Data"
+            >
+              <RefreshCw size={20} />
+            </button>
+            <button
+              onClick={() => setShowExportModal(true)}
+              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+              title="Export Data"
+            >
+              <Download size={20} />
+            </button>
+          </div>
+        </div>
+      </div>
+      {/* Controls */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="flex items-center gap-4">
+            <div>
+              <label
+                htmlFor="overview"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Time Period
+              </label>
+              <select
+                id="overview"
+                value={overview}
+                onChange={(e) => {
+                  setOverview(e.target.value);
+                  setCustomDateRange(undefined);
+                  setSelectedDate(new Date());
+                }}
+                className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+              >
+                <option value="hourly">Hourly</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="viewType"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                View Type
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setViewType("chart")}
+                  className={`p-2 rounded-md ${
+                    viewType === "chart"
+                      ? "bg-blue-100 text-blue-600"
+                      : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                  }`}
+                  title="Bar Chart"
+                >
+                  <BarChart3 size={20} />
+                </button>
+                <button
+                  onClick={() => setViewType("line")}
+                  className={`p-2 rounded-md ${
+                    viewType === "line"
+                      ? "bg-blue-100 text-blue-600"
+                      : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                  }`}
+                  title="Line Chart"
+                >
+                  <LineChartIcon size={20} />
+                </button>
+                <button
+                  onClick={() => setViewType("table")}
+                  className={`p-2 rounded-md ${
+                    viewType === "table"
+                      ? "bg-blue-100 text-blue-600"
+                      : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                  }`}
+                  title="Table View"
+                >
+                  <FileText size={20} />
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <div className="text-sm text-gray-500">
+              <strong>Date Range:</strong> {dateRange}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handlePreviousPeriod}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+                title="Previous Period"
+              >
+                <ChevronLeft size={20} />
+              </button>
+              <button
+                onClick={handleResetDateRange}
+                className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-md"
+                title="Reset to Current Period"
+              >
+                Today
+              </button>
+              <button
+                onClick={handleNextPeriod}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+                title="Next Period"
+              >
+                <ChevronRight size={20} />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      {/* Chart/Table */}
+      {isLoading ? (
+        <div className="bg-white rounded-lg border border-gray-200 p-6 flex items-center justify-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        </div>
+      ) : error ? (
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <div className="text-center">
+            <div className="text-red-500 mb-2">
+              <X size={24} />
+            </div>
+            <p className="text-gray-700">{error}</p>
+            <button
+              onClick={handleFetchData}
+              className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : (
+        renderChart()
+      )}
+      {/* Export Modal */}
       <ExportModal
         isOpen={showExportModal}
         onClose={() => setShowExportModal(false)}
-        chartRef={chartRef}
         chartData={chartData}
         xKey={xKey}
         currentOverview={overview}
         dateRange={dateRange}
+        viewType={viewType}
+        chartRef={chartRef}
       />
     </div>
   );
 };
 
-export default HumidityChart;
+export default HumidityDashboard;

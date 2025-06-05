@@ -1,16 +1,36 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { User } from '../api/services/authService';
-import { Menu, X, ChevronRight } from "lucide-react";
+import { Menu, X, ChevronRight, LayoutDashboard, Activity, Users, Settings, Info, LogOut } from "lucide-react";
 
 const Navbar: React.FC = () => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
+  // Handle click outside to close menu
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+
+    if (menuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      // Prevent body scroll when menu is open
+      document.body.style.overflow = 'hidden';
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.body.style.overflow = 'unset';
+    };
+  }, [menuOpen]);
 
   const handleLogout = () => {
     logout();
@@ -53,12 +73,14 @@ const Navbar: React.FC = () => {
           />
         </div>
 
+        {/* Desktop Navigation */}
         <nav className="hidden md:flex mt-3 gap-10 items-center text-[#1E441E] text-sm font-medium">
           <NavLink
             to="/dashboard"
             className={({ isActive }) =>
-              isActive ? "relative pb-2 after:absolute after:-bottom-1 after:left-0 after:w-full after:h-1 after:bg-[#456C2D]"
-                : " hover:text-[#347928] transition"
+              isActive 
+                ? "relative pb-2 after:absolute after:-bottom-1 after:left-0 after:w-full after:h-1 after:bg-[#456C2D] transition-all duration-300"
+                : "hover:text-[#347928] transition-colors duration-200"
             }
           >
             Dashboard
@@ -67,8 +89,9 @@ const Navbar: React.FC = () => {
           <NavLink
             to="/livedata"
             className={({ isActive }) =>
-              isActive ? "relative  pb-2  after:absolute after:-bottom-1 after:left-0 after:w-full after:h-1 after:bg-[#456C2D]"
-                : "hover:text-[#347928] transition"
+              isActive 
+                ? "relative pb-2 after:absolute after:-bottom-1 after:left-0 after:w-full after:h-1 after:bg-[#456C2D] transition-all duration-300"
+                : "hover:text-[#347928] transition-colors duration-200"
             }
           >
             Live Data
@@ -78,65 +101,175 @@ const Navbar: React.FC = () => {
             <NavLink
               to="/accountmanagement"
               className={({ isActive }) =>
-                isActive ? "relative pb-2 after:absolute after:-bottom-1 after:left-0 after:w-full after:h-1 after:bg-[#456C2D]"
-                  : "hover:text-[#456C2D] transition"
+                isActive 
+                  ? "relative pb-2 after:absolute after:-bottom-1 after:left-0 after:w-full after:h-1 after:bg-[#456C2D] transition-all duration-300"
+                  : "hover:text-[#347928] transition-colors duration-200"
               }
             >
               Account Management
             </NavLink>
           )}
-          {user?.role === 'super_admin'&& (
-        <NavLink 
-          to="/admin/activity-logs" 
-          className={({ isActive }) =>
-                isActive ? "relative pb-2 after:absolute after:-bottom-1 after:left-0 after:w-full after:h-1 after:bg-[#456C2D]"
-                  : "hover:text-[#456C2D] transition"
+          {user?.role === 'super_admin' && (
+            <NavLink 
+              to="/admin/activity-logs" 
+              className={({ isActive }) =>
+                isActive 
+                  ? "relative pb-2 after:absolute after:-bottom-1 after:left-0 after:w-full after:h-1 after:bg-[#456C2D] transition-all duration-300"
+                  : "hover:text-[#347928] transition-colors duration-200"
               }
             >
-          Activity Log
-        </NavLink>
-      )}
+              Activity Log
+            </NavLink>
+          )}
         </nav>
-        <button onClick={() => setMenuOpen(true)} className="text-[#1E441E]">
+
+        {/* Menu Button */}
+        <button 
+          onClick={() => setMenuOpen(true)} 
+          className="text-[#1E441E] p-2 hover:bg-[#E6F0D3] rounded-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#456C2D] focus:ring-opacity-50"
+          aria-label="Open menu"
+        >
           <Menu size={28} />
         </button>
       </div>
 
+      {/* Menu Overlay */}
       {menuOpen && (
-        <div className="absolute top-24 right-4 w-72 bg-white shadow-xl z-50 p-6 rounded-2xl border border-gray-200 animate-fade-in">
-          <div className="flex justify-end mb-4">
-            <button onClick={() => setMenuOpen(false)} className="text-[#1E441E]">
-              <X size={24} />
-            </button>
+        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm z-50 transition-opacity duration-300">
+          <div 
+            ref={menuRef}
+            className="absolute top-0 right-0 h-full w-80 bg-white shadow-2xl transform transition-transform duration-300 ease-in-out"
+          >
+            <div className="flex flex-col h-full">
+              {/* Header */}
+              <div className="flex justify-between items-center p-6 border-b border-gray-100">
+                <h2 className="text-xl font-semibold text-[#1E441E]">Menu</h2>
+                <button 
+                  onClick={() => setMenuOpen(false)} 
+                  className="text-[#1E441E] p-2 hover:bg-[#E6F0D3] rounded-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#456C2D] focus:ring-opacity-50"
+                  aria-label="Close menu"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              {/* Mobile Navigation Links - Only visible on mobile */}
+              <nav className="flex-1 overflow-y-auto p-6 md:hidden">
+                <div className="space-y-2">
+                  <NavLink
+                    to="/dashboard"
+                    onClick={() => setMenuOpen(false)}
+                    className={({ isActive }) =>
+                      `flex items-center px-4 py-3 rounded-lg transition-all duration-200 ${
+                        isActive 
+                          ? "bg-[#E6F0D3] text-[#456C2D] font-medium" 
+                          : "text-[#1E441E] hover:bg-[#F5F9E8]"
+                      }`
+                    }
+                  >
+                    <LayoutDashboard size={20} className="mr-3" />
+                    Dashboard
+                  </NavLink>
+
+                  <NavLink
+                    to="/livedata"
+                    onClick={() => setMenuOpen(false)}
+                    className={({ isActive }) =>
+                      `flex items-center px-4 py-3 rounded-lg transition-all duration-200 ${
+                        isActive 
+                          ? "bg-[#E6F0D3] text-[#456C2D] font-medium" 
+                          : "text-[#1E441E] hover:bg-[#F5F9E8]"
+                      }`
+                    }
+                  >
+                    <Activity size={20} className="mr-3" />
+                    Live Data
+                  </NavLink>
+
+                  {(user?.role === 'admin' || user?.role === 'super_admin') && (
+                    <NavLink
+                      to="/accountmanagement"
+                      onClick={() => setMenuOpen(false)}
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-3 rounded-lg transition-all duration-200 ${
+                          isActive 
+                            ? "bg-[#E6F0D3] text-[#456C2D] font-medium" 
+                            : "text-[#1E441E] hover:bg-[#F5F9E8]"
+                        }`
+                      }
+                    >
+                      <Users size={20} className="mr-3" />
+                      Account Management
+                    </NavLink>
+                  )}
+
+                  {user?.role === 'super_admin' && (
+                    <NavLink
+                      to="/admin/activity-logs"
+                      onClick={() => setMenuOpen(false)}
+                      className={({ isActive }) =>
+                        `flex items-center px-4 py-3 rounded-lg transition-all duration-200 ${
+                          isActive 
+                            ? "bg-[#E6F0D3] text-[#456C2D] font-medium" 
+                            : "text-[#1E441E] hover:bg-[#F5F9E8]"
+                        }`
+                      }
+                    >
+                      <ScrollText size={20} className="mr-3" />
+                      Activity Log
+                    </NavLink>
+                  )}
+                </div>
+              </nav>
+
+              {/* Menu Actions - Visible on both mobile and desktop */}
+              <div className="p-6 border-t border-gray-100 bg-gray-50">
+                <div className="space-y-2">
+                  <button 
+                    className="flex items-center justify-between w-full px-4 py-3 text-[#1E441E] hover:bg-[#E6F0D3] rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#456C2D] focus:ring-opacity-50"
+                    onClick={() => {
+                      setAccountModalOpen(true);
+                      setMenuOpen(false);
+                    }}
+                  >
+                    <div className="flex items-center">
+                      <Settings size={20} className="mr-3" />
+                      Account Setting
+                    </div>
+                    <ChevronRight size={18} />
+                  </button>
+
+                  <button 
+                    className="flex items-center justify-between w-full px-4 py-3 text-[#1E441E] hover:bg-[#E6F0D3] rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#456C2D] focus:ring-opacity-50"
+                    onClick={() => {
+                      setAboutModalOpen(true);
+                      setMenuOpen(false);
+                    }}
+                  >
+                    <div className="flex items-center">
+                      <Info size={20} className="mr-3" />
+                      About
+                    </div>
+                    <ChevronRight size={18} />
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      handleLogout();
+                      setMenuOpen(false);
+                    }}
+                    className="flex items-center justify-between w-full px-4 py-3 text-[#1E441E] hover:bg-[#E6F0D3] rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#456C2D] focus:ring-opacity-50"
+                  >
+                    <div className="flex items-center">
+                      <LogOut size={20} className="mr-3" />
+                      Log out
+                    </div>
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
-          <ul className="space-y-5 text-base font-semibold">
-            <li 
-              className="flex justify-between items-center text-[#1E441E] hover:opacity-80 cursor-pointer"
-              onClick={() => {
-                setAccountModalOpen(true);
-                setMenuOpen(false);
-              }}
-            >
-              Account Setting <ChevronRight size={18} />
-            </li>
-            <li 
-              className="flex justify-between items-center text-[#1E441E] hover:opacity-80 cursor-pointer"
-              onClick={() => {
-                setAboutModalOpen(true);
-                setMenuOpen(false);
-              }}
-            >
-              About <ChevronRight size={18} />
-            </li>
-            <NavLink
-              to="/login"
-              onClick={handleLogout}>
-              <li className="flex justify-between items-center text-gray-700 hover:opacity-80 cursor-pointer text-[#1E441E]">
-                Log out
-                <ChevronRight size={18} />
-              </li>
-            </NavLink>
-          </ul>
         </div>
       )}
 
@@ -254,5 +387,21 @@ const Navbar: React.FC = () => {
     </header>
   );
 };
+
+// Add this to your global CSS or Tailwind config
+const styles = `
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
+`;
 
 export default Navbar;
